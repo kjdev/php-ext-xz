@@ -13,21 +13,17 @@
 #include "php_xz.h"
 
 /* xz */
-/*
-#ifdef HAVE_SYS_TYPES_H
-#include <sys/types.h>
-#endif
-#ifdef HAVE_STDINT_H
-#include <stdint.h>
-#endif
-*/
 #include "lzma.h"
-/*
-#define FRAME_HEADER_SIZE 5
-#define BLOCK_HEADER_SIZE 3
-#define MAX_HEADER_SIZE FRAME_HEADER_SIZE+3
-*/
 #define DEFAULT_COMPRESS_LEVEL LZMA_PRESET_DEFAULT
+#define DEFAULT_BUFFER_SIZE 4096
+
+ZEND_DECLARE_MODULE_GLOBALS(xz);
+
+ZEND_INI_BEGIN()
+  STD_ZEND_INI_ENTRY("xz.buffer_size", ZEND_TOSTR(DEFAULT_BUFFER_SIZE),
+                     ZEND_INI_ALL, OnUpdateLong, buffer_size,
+                     zend_xz_globals, xz_globals)
+ZEND_INI_END()
 
 ZEND_BEGIN_ARG_INFO_EX(arginfo_xz_compress, 0, 0, 1)
   ZEND_ARG_INFO(0, data)
@@ -66,7 +62,7 @@ ZEND_FUNCTION(xz_compress)
   size = lzma_stream_buffer_bound(Z_STRLEN_P(data));
   output = (uint8_t *)emalloc(size + 1);
   if (!output) {
-    zend_error(E_WARNING, "xz_compress: memory error");
+    zend_error(E_WARNING, "xz_compress: memory allocate error");
     RETURN_FALSE;
   }
 
@@ -92,7 +88,7 @@ ZEND_FUNCTION(xz_uncompress)
 {
   zval *data;
   uint8_t *buffer;
-  size_t size = 4096;
+  size_t size = PHP_XZ_G(buffer_size);
 #if ZEND_MODULE_API_NO >= 20141001
   smart_string out = {0};
 #else
@@ -112,7 +108,7 @@ ZEND_FUNCTION(xz_uncompress)
 
   buffer = (uint8_t *)emalloc(size);
   if (!buffer) {
-    zend_error(E_WARNING, "xz_uncompress: memory error");
+    zend_error(E_WARNING, "xz_uncompress: memory allocate error");
     RETURN_FALSE;
   }
 
@@ -134,12 +130,12 @@ ZEND_FUNCTION(xz_uncompress)
 
     lzma_ret ret = lzma_code(&stream, action);
     if (stream.avail_out == 0 || ret == LZMA_STREAM_END) {
-      size_t used_out = size - stream.avail_out;
-      if (used_out != 0) {
+      size_t out_size = size - stream.avail_out;
+      if (out_size != 0) {
 #if ZEND_MODULE_API_NO >= 20141001
-        smart_string_appendl(&out, buffer, used_out);
+        smart_string_appendl(&out, buffer, out_size);
 #else
-        smart_str_appendl(&out, buffer, used_out);
+        smart_str_appendl(&out, buffer, out_size);
 #endif
       }
       stream.next_out = buffer;
@@ -173,474 +169,391 @@ ZEND_FUNCTION(xz_uncompress)
 #endif
 }
 
-#if 0
+
 typedef struct _php_xz_stream_data {
-    char *bufin, *bufout;
-    size_t sizein, sizeout;
-    XZ_CCtx* cctx;
-    XZ_DCtx* dctx;
-    XZ_inBuffer input;
-    XZ_outBuffer output;
-    php_stream *stream;
+  lzma_stream strm;
+  uint8_t *buf;
+  size_t bufsize;
+  php_stream *stream;
 } php_xz_stream_data;
 
-
 #define STREAM_DATA_FROM_STREAM() \
-    php_xz_stream_data *self = (php_xz_stream_data *) stream->abstract
+  php_xz_stream_data *self = (php_xz_stream_data *) stream->abstract
 
 #define STREAM_NAME "compress.xz"
 
 static int php_xz_decomp_close(php_stream *stream, int close_handle TSRMLS_DC)
 {
-    STREAM_DATA_FROM_STREAM();
+  STREAM_DATA_FROM_STREAM();
 
-    if (!self) {
-        return EOF;
-    }
-
-    if (close_handle) {
-        if (self->stream) {
-            php_stream_close(self->stream);
-            self->stream = NULL;
-        }
-    }
-
-    XZ_freeDCtx(self->dctx);
-    efree(self->bufin);
-    efree(self->bufout);
-    efree(self);
-    stream->abstract = NULL;
-
+  if (!self) {
     return EOF;
-}
+  }
 
-static int php_xz_comp_flush_or_end(php_xz_stream_data *self, int end TSRMLS_DC)
-{
-    size_t res;
-    int ret = 0;
-
-#if XZ_VERSION_NUMBER < 10400
-    /* Compress remaining data */
-    if (self->input.size)  {
-        self->input.pos = 0;
-        do {
-            self->output.size = self->sizeout;
-            self->output.pos  = 0;
-            res = XZ_compressStream(self->cctx, &self->output, &self->input);
-            if (XZ_isError(res)) {
-                php_error_docref(NULL TSRMLS_CC, E_WARNING, "libxz error %s\n", XZ_getErrorName(res));
-                ret = EOF;
-            }
-            php_stream_write(self->stream, self->bufout, self->output.pos);
-        } while (self->input.pos != self->input.size);
+  if (close_handle) {
+    if (self->stream) {
+      php_stream_close(self->stream);
+      self->stream = NULL;
     }
-#endif
+  }
 
-    /* Flush / End */
-    do {
-        self->output.size = self->sizeout;
-        self->output.pos  = 0;
-#if XZ_VERSION_NUMBER >= 10400
-        res = XZ_compressStream2(self->cctx, &self->output, &self->input, end ? XZ_e_end : XZ_e_flush);
-#else
-        if (end) {
-            res = XZ_endStream(self->cctx, &self->output);
-        } else {
-            res = XZ_flushStream(self->cctx, &self->output);
-        }
-#endif
-        if (XZ_isError(res)) {
-            php_error_docref(NULL TSRMLS_CC, E_WARNING, "libxz error %s\n", XZ_getErrorName(res));
-            ret = EOF;
-        }
-        php_stream_write(self->stream, self->bufout, self->output.pos);
-    } while (res > 0);
+  lzma_end(&self->strm);
 
-    self->input.pos = 0;
-    self->input.size = 0;
+  if (self->buf) {
+    efree(self->buf);
+  }
+  efree(self);
 
-    return ret;
+  stream->abstract = NULL;
+
+  return EOF;
 }
-
 
 static int php_xz_comp_flush(php_stream *stream TSRMLS_DC)
 {
-    STREAM_DATA_FROM_STREAM();
+  STREAM_DATA_FROM_STREAM();
 
-    return php_xz_comp_flush_or_end(self, 0 TSRMLS_CC);
+  int ret = 0;
+
+  do {
+    self->strm.next_out = self->buf;
+    self->strm.avail_out = self->bufsize;
+
+    lzma_ret result = lzma_code(&self->strm, LZMA_RUN);
+    if (result == LZMA_OK) {
+      size_t write = (size_t)(self->strm.next_out - self->buf);
+      if (write) {
+        php_stream_write(self->stream, self->buf, write);
+      }
+    } else {
+      php_error_docref(NULL TSRMLS_CC, E_WARNING, "xz compress error\n");
+      ret = EOF;
+    }
+  } while (self->strm.avail_in > 0);
+
+  return ret;
 }
-
 
 static int php_xz_comp_close(php_stream *stream, int close_handle TSRMLS_DC)
 {
-    STREAM_DATA_FROM_STREAM();
+  STREAM_DATA_FROM_STREAM();
 
-    if (!self) {
-        return EOF;
-    }
-
-    php_xz_comp_flush_or_end(self, 1 TSRMLS_CC);
-
-    if (close_handle) {
-        if (self->stream) {
-            php_stream_close(self->stream);
-            self->stream = NULL;
-        }
-    }
-
-    XZ_freeCCtx(self->cctx);
-    efree(self->bufin);
-    efree(self->bufout);
-    efree(self);
-    stream->abstract = NULL;
-
+  if (!self) {
     return EOF;
-}
+  }
 
+  while (1) {
+    self->strm.next_out = self->buf;
+    self->strm.avail_out = self->bufsize;
+
+    lzma_ret result = lzma_code(&self->strm, LZMA_FINISH);
+    if (result == LZMA_OK || result == LZMA_STREAM_END) {
+      size_t write = (size_t)(self->strm.next_out - self->buf);
+      if (write) {
+        php_stream_write(self->stream, self->buf, write);
+      }
+      if (result == LZMA_STREAM_END) {
+        break;
+      }
+    } else {
+      php_error_docref(NULL TSRMLS_CC, E_WARNING, "xz compress error\n");
+    }
+  }
+
+  if (close_handle) {
+    if (self->stream) {
+      php_stream_close(self->stream);
+      self->stream = NULL;
+    }
+  }
+
+  lzma_end(&self->strm);
+
+  if (self->buf) {
+    efree(self->buf);
+  }
+  efree(self);
+
+  stream->abstract = NULL;
+
+  return EOF;
+}
 
 #if PHP_VERSION_ID < 70400
 static size_t php_xz_decomp_read(php_stream *stream, char *buf, size_t count TSRMLS_DC)
 {
-    size_t ret = 0;
+  size_t ret = 0;
 #else
 static ssize_t php_xz_decomp_read(php_stream *stream, char *buf, size_t count TSRMLS_DC)
 {
-    ssize_t ret = 0;
+  ssize_t ret = 0;
 #endif
-    size_t x, res;
-    STREAM_DATA_FROM_STREAM();
+  STREAM_DATA_FROM_STREAM();
 
-    while (count > 0) {
-        x = self->output.size - self->output.pos;
-        /* enough available */
-        if (x >= count) {
-            memcpy(buf, self->bufout + self->output.pos, count);
-            self->output.pos += count;
-            ret += count;
-            return ret;
-        }
-        /* take remaining from out  */
-        if (x) {
-            memcpy(buf, self->bufout + self->output.pos, x);
-            self->output.pos += x;
-            ret += x;
-            buf += x;
-            count -= x;
-        }
-        /* decompress */
-        if (self->input.pos < self->input.size) {
-            /* for xz */
-            self->output.pos = 0;
-            self->output.size = self->sizeout;
-            res = XZ_decompressStream(self->dctx, &self->output , &self->input);
-            if (XZ_isError(res)) {
-                php_error_docref(NULL TSRMLS_CC, E_WARNING, "libxz error %s\n", XZ_getErrorName(res));
+  lzma_action action = LZMA_RUN;
+  if (self->strm.avail_in == 0 && !php_stream_eof(self->stream)) {
+    self->strm.avail_in = php_stream_read(self->stream,
+                                          self->buf + self->strm.avail_in,
+                                          self->bufsize - self->strm.avail_in);
+    self->strm.next_in = self->buf;
+  } else if (php_stream_eof(self->stream)) {
+    action = LZMA_FINISH;
+  }
+  self->strm.avail_out = count;
+  self->strm.next_out = (uint8_t *)buf;
+
+  lzma_ret result = lzma_code(&self->strm, action);
+  if (result == LZMA_OK || result == LZMA_STREAM_END) {
+    ret = (size_t)(self->strm.next_out - (uint8_t *)buf);
+  } else {
+    php_error_docref(NULL TSRMLS_CC, E_WARNING, "xz: uncompression error");
 #if PHP_VERSION_ID >= 70400
-                return -1;
+    return -1;
+#else
+    return 0;
 #endif
-            }
-            /* for us */
-            self->output.size = self->output.pos;
-            self->output.pos = 0;
-        }  else {
-            /* read */
-            self->input.pos = 0;
-            self->input.size = php_stream_read(self->stream, self->bufin, self->sizein);
-            if (!self->input.size) {
-                /* EOF */
-                count = 0;
-            }
-        }
-    }
-    return ret;
-}
+  }
 
+  return ret;
+}
 
 #if PHP_VERSION_ID < 70400
 static size_t php_xz_comp_write(php_stream *stream, const char *buf, size_t count TSRMLS_DC)
 {
-    size_t ret = 0;
+  size_t ret = 0;
 #else
 static ssize_t php_xz_comp_write(php_stream *stream, const char *buf, size_t count TSRMLS_DC)
 {
-    ssize_t ret = 0;
+  ssize_t ret = 0;
 #endif
-    size_t x, res;
+  STREAM_DATA_FROM_STREAM();
 
-    STREAM_DATA_FROM_STREAM();
+  self->strm.avail_in = count;
+  self->strm.next_in = (uint8_t *)buf;
 
-    while(count > 0) {
-        /* enough room for full data */
-        if (self->input.size + count < self->sizein) {
-            memcpy(self->bufin + self->input.size, buf, count);
-            self->input.size += count;
-            ret += count;
-            count = 0;
-            break;
-        }
+  while (1) {
+    self->strm.avail_out = self->bufsize;
+    self->strm.next_out = self->buf;
 
-        /* fill input buffer */
-        x = self->sizein - self->input.size;
-        memcpy(self->bufin + self->input.size, buf, x);
-        self->input.size += x;
-        buf += x;
-        count -= x;
-        ret += x;
+    lzma_ret result = lzma_code(&self->strm, LZMA_RUN);
+    if (result == LZMA_OK) {
+      size_t write = (size_t)(self->strm.next_out - self->buf);
+      if (write) {
+        php_stream_write(self->stream, self->buf, write);
+      }
 
-        /* compress and write */
-        self->input.pos = 0;
-        do {
-            self->output.size = self->sizeout;
-            self->output.pos  = 0;
-#if XZ_VERSION_NUMBER >= 10400
-            res = XZ_compressStream2(self->cctx, &self->output, &self->input, XZ_e_continue);
-#else
-            res = XZ_compressStream(self->cctx, &self->output, &self->input);
-#endif
-            if (XZ_isError(res)) {
-                php_error_docref(NULL TSRMLS_CC, E_WARNING, "libxz error %s\n", XZ_getErrorName(res));
-#if PHP_VERSION_ID >= 70400
-                return -1;
-#endif
-            }
-            php_stream_write(self->stream, self->bufout, self->output.pos);
-        } while (self->input.pos != self->input.size);
-
-        self->input.pos = 0;
-        self->input.size = 0;
+      if (self->strm.avail_in == 0) {
+        ret = count - self->strm.avail_in;
+        break;
+      }
+    } else {
+      php_error_docref(NULL TSRMLS_CC, E_WARNING, "xz compress error\n");
     }
-    return ret;
+  }
+
+  return ret;
 }
 
-
 static php_stream_ops php_stream_xz_read_ops = {
-    NULL,    /* write */
-    php_xz_decomp_read,
-    php_xz_decomp_close,
-    NULL,    /* flush */
-    STREAM_NAME,
-    NULL,    /* seek */
-    NULL,    /* cast */
-    NULL,    /* stat */
-    NULL     /* set_option */
+  NULL,    /* write */
+  php_xz_decomp_read,
+  php_xz_decomp_close,
+  NULL,    /* flush */
+  STREAM_NAME,
+  NULL,    /* seek */
+  NULL,    /* cast */
+  NULL,    /* stat */
+  NULL     /* set_option */
 };
-
 
 static php_stream_ops php_stream_xz_write_ops = {
-    php_xz_comp_write,
-    NULL,    /* read */
-    php_xz_comp_close,
-    php_xz_comp_flush,
-    STREAM_NAME,
-    NULL,    /* seek */
-    NULL,    /* cast */
-    NULL,    /* stat */
-    NULL     /* set_option */
+  php_xz_comp_write,
+  NULL,    /* read */
+  php_xz_comp_close,
+  php_xz_comp_flush,
+  STREAM_NAME,
+  NULL,    /* seek */
+  NULL,    /* cast */
+  NULL,    /* stat */
+  NULL     /* set_option */
 };
-
 
 static php_stream *
 php_stream_xz_opener(
-    php_stream_wrapper *wrapper,
+  php_stream_wrapper *wrapper,
 #if PHP_VERSION_ID < 50600
-    char *path,
-    char *mode,
+  char *path,
+  char *mode,
 #else
-    const char *path,
-    const char *mode,
+  const char *path,
+  const char *mode,
 #endif
-    int options,
+  int options,
 #if PHP_MAJOR_VERSION < 7
-    char **opened_path,
+  char **opened_path,
 #else
-    zend_string **opened_path,
+  zend_string **opened_path,
 #endif
-    php_stream_context *context
-    STREAMS_DC TSRMLS_DC)
+  php_stream_context *context
+  STREAMS_DC TSRMLS_DC)
 {
-    php_xz_stream_data *self;
-    int level = XZ_CLEVEL_DEFAULT;
-    int compress;
-#if XZ_VERSION_NUMBER >= 10400
-    XZ_CDict *cdict = NULL;
-    XZ_DDict *ddict = NULL;
-#endif
+  php_xz_stream_data *self;
+  int level = DEFAULT_COMPRESS_LEVEL;
+  int compress;
 
-    if (strncasecmp(STREAM_NAME, path, sizeof(STREAM_NAME)-1) == 0) {
-        path += sizeof(STREAM_NAME)-1;
-        if (strncmp("://", path, 3) == 0) {
-            path += 3;
-        }
+  if (strncasecmp(STREAM_NAME, path, sizeof(STREAM_NAME)-1) == 0) {
+    path += sizeof(STREAM_NAME)-1;
+    if (strncmp("://", path, 3) == 0) {
+      path += 3;
     }
+  }
 
-    if (php_check_open_basedir(path TSRMLS_CC)) {
-        return NULL;
-    }
-
-    if (!strcmp(mode, "w") || !strcmp(mode, "wb")) {
-       compress = 1;
-    } else if (!strcmp(mode, "r") || !strcmp(mode, "rb")) {
-       compress = 0;
-    } else {
-        php_error_docref(NULL TSRMLS_CC, E_ERROR, "xz: invalid open mode");
-        return NULL;
-    }
-
-    if (context) {
-#if PHP_MAJOR_VERSION >= 7
-        zval *tmpzval;
-        zend_string *data;
-
-        if (NULL != (tmpzval = php_stream_context_get_option(context, "xz", "level"))) {
-            level = zval_get_long(tmpzval);
-        }
-#if XZ_VERSION_NUMBER >= 10400
-        if (NULL != (tmpzval = php_stream_context_get_option(context, "xz", "dict"))) {
-            data = zval_get_string(tmpzval);
-            if (compress) {
-                cdict = XZ_createCDict(ZSTR_VAL(data), ZSTR_LEN(data), level);
-            } else {
-                ddict = XZ_createDDict(ZSTR_VAL(data), ZSTR_LEN(data));
-            }
-            zend_string_release(data);
-        }
-#endif
-#else
-        zval **tmpzval;
-
-        if (php_stream_context_get_option(context, "xz", "level", &tmpzval) == SUCCESS) {
-            convert_to_long_ex(tmpzval);
-            level = Z_LVAL_PP(tmpzval);
-        }
-#if XZ_VERSION_NUMBER >= 10400
-        if (php_stream_context_get_option(context, "xz", "dict", &tmpzval) == SUCCESS) {
-            convert_to_string(*tmpzval);
-            if (compress) {
-                cdict = XZ_createCDict(Z_STRVAL_PP(tmpzval), Z_STRLEN_PP(tmpzval), level);
-            } else {
-                ddict = XZ_createDDict(Z_STRVAL_PP(tmpzval), Z_STRLEN_PP(tmpzval));
-            }
-        }
-#endif
-#endif
-    }
-
-    if (level > XZ_maxCLevel()) {
-        php_error_docref(NULL TSRMLS_CC, E_WARNING, "xz: compression level (%d) must be less than %d", level, XZ_maxCLevel());
-        level = XZ_maxCLevel();
-    }
-
-    self = ecalloc(sizeof(*self), 1);
-    self->stream = php_stream_open_wrapper(path, mode, options | REPORT_ERRORS, NULL);
-    if (!self->stream) {
-        efree(self);
-        return NULL;
-    }
-
-    /* File */
-    if (compress) {
-        self->dctx = NULL;
-        self->cctx = XZ_createCCtx();
-        if (!self->cctx) {
-            php_error_docref(NULL TSRMLS_CC, E_WARNING, "xz: compression context failed");
-            php_stream_close(self->stream);
-            efree(self);
-            return NULL;
-        }
-#if XZ_VERSION_NUMBER >= 10400
-        XZ_CCtx_reset(self->cctx, XZ_reset_session_only);
-        XZ_CCtx_refCDict(self->cctx, cdict);
-        XZ_CCtx_setParameter(self->cctx, XZ_c_compressionLevel, level);
-#else
-        XZ_initCStream(self->cctx, level);
-#endif
-        self->bufin = emalloc(self->sizein = XZ_CStreamInSize());
-        self->bufout = emalloc(self->sizeout = XZ_CStreamOutSize());
-        self->input.src  = self->bufin;
-        self->input.pos   = 0;
-        self->input.size  = 0;
-        self->output.dst = self->bufout;
-        self->output.pos  = 0;
-        self->output.size = 0;
-
-        return php_stream_alloc(&php_stream_xz_write_ops, self, NULL, mode);
-
-    } else {
-        self->dctx = XZ_createDCtx();
-        if (!self->dctx) {
-            php_error_docref(NULL TSRMLS_CC, E_WARNING, "xz: compression context failed");
-            php_stream_close(self->stream);
-            efree(self);
-            return NULL;
-        }
-        self->cctx = NULL;
-        self->bufin = emalloc(self->sizein = XZ_DStreamInSize());
-        self->bufout = emalloc(self->sizeout = XZ_DStreamOutSize());
-#if XZ_VERSION_NUMBER >= 10400
-        XZ_DCtx_reset(self->dctx, XZ_reset_session_only);
-        XZ_DCtx_refDDict(self->dctx, ddict);
-#else
-        XZ_initDStream(self->dctx);
-#endif
-        self->input.src   = self->bufin;
-        self->input.pos   = 0;
-        self->input.size  = 0;
-        self->output.dst  = self->bufout;
-        self->output.pos  = 0;
-        self->output.size = 0;
-
-        return php_stream_alloc(&php_stream_xz_read_ops, self, NULL, mode);
-    }
+  if (php_check_open_basedir(path TSRMLS_CC)) {
     return NULL;
+  }
+
+  if (!strcmp(mode, "w") || !strcmp(mode, "wb")) {
+    compress = 1;
+  } else if (!strcmp(mode, "r") || !strcmp(mode, "rb")) {
+    compress = 0;
+  } else {
+    php_error_docref(NULL TSRMLS_CC, E_ERROR, "xz: invalid open mode");
+    return NULL;
+  }
+
+  if (context) {
+#if PHP_MAJOR_VERSION >= 7
+    zval *tmpzval;
+    zend_string *data;
+
+    if (NULL !=
+        (tmpzval = php_stream_context_get_option(context, "xz", "level"))) {
+      level = zval_get_long(tmpzval);
+    }
+#else
+    zval **tmpzval;
+
+    if (php_stream_context_get_option(context, "xz", "level",
+                                      &tmpzval) == SUCCESS) {
+      convert_to_long_ex(tmpzval);
+      level = Z_LVAL_PP(tmpzval);
+    }
+#endif
+  }
+
+  if (level > 9 || level < 0) {
+    php_error_docref(NULL TSRMLS_CC, E_WARNING,
+                     "xz: compression level (%d) must be within 0..9", level);
+    level = DEFAULT_COMPRESS_LEVEL;
+  }
+
+  self = ecalloc(sizeof(*self), 1);
+  self->stream = php_stream_open_wrapper(path, mode,
+                                         options | REPORT_ERRORS, NULL);
+  if (!self->stream) {
+    efree(self);
+    return NULL;
+  }
+
+  self->bufsize = PHP_XZ_G(buffer_size);
+  self->buf = emalloc(self->bufsize);
+  if (!self->buf) {
+    php_error_docref(NULL TSRMLS_CC, E_WARNING,
+                     "xz: stream context memory allocate failed");
+    php_stream_close(self->stream);
+    efree(self);
+    return NULL;
+  }
+
+  if (compress) {
+    lzma_options_lzma opt;
+    if (lzma_lzma_preset(&opt, (uint32_t)level)) {
+      return NULL;
+    }
+
+    lzma_filter filters[] = {
+      { .id = LZMA_FILTER_LZMA2, .options = &opt },
+      { .id = LZMA_VLI_UNKNOWN, .options = NULL },
+    };
+
+    lzma_check check = LZMA_CHECK_CRC64;
+
+    if (lzma_stream_encoder(&self->strm, filters, check) != LZMA_OK) {
+      php_error_docref(NULL TSRMLS_CC, E_WARNING,
+                       "xz: compression context failed");
+      php_stream_close(self->stream);
+      efree(self->buf);
+      efree(self);
+      return NULL;
+    }
+
+    return php_stream_alloc(&php_stream_xz_write_ops, self, NULL, mode);
+
+  } else {
+    if (lzma_stream_decoder(&self->strm,
+                            UINT64_MAX, LZMA_CONCATENATED) != LZMA_OK) {
+      php_error_docref(NULL TSRMLS_CC, E_WARNING,
+                       "xz: decompression context failed");
+      php_stream_close(self->stream);
+      efree(self->buf);
+      efree(self);
+      return NULL;
+    }
+
+    return php_stream_alloc(&php_stream_xz_read_ops, self, NULL, mode);
+  }
+
+  return NULL;
 }
 
-
 static php_stream_wrapper_ops xz_stream_wops = {
-    php_stream_xz_opener,
-    NULL,    /* close */
-    NULL,    /* fstat */
-    NULL,    /* stat */
-    NULL,    /* opendir */
-    STREAM_NAME,
-    NULL,    /* unlink */
-    NULL,    /* rename */
-    NULL,    /* mkdir */
-    NULL    /* rmdir */
+  php_stream_xz_opener,
+  NULL,    /* close */
+  NULL,    /* fstat */
+  NULL,    /* stat */
+  NULL,    /* opendir */
+  STREAM_NAME,
+  NULL,    /* unlink */
+  NULL,    /* rename */
+  NULL,    /* mkdir */
+  NULL     /* rmdir */
 #if PHP_VERSION_ID >= 50400
-    , NULL
+  , NULL
 #endif
 };
-
 
 php_stream_wrapper php_stream_xz_wrapper = {
-    &xz_stream_wops,
-    NULL,
-    0 /* is_url */
+  &xz_stream_wops,
+  NULL,
+  0 /* is_url */
 };
-#endif
+
+static void
+php_xz_init_globals(zend_xz_globals *xz_globals)
+{
+  xz_globals->buffer_size = DEFAULT_BUFFER_SIZE;
+}
 
 ZEND_MINIT_FUNCTION(xz)
 {
-  /*
-  REGISTER_LONG_CONSTANT("XZ_COMPRESS_LEVEL_MIN",
-                         1,
-                         CONST_CS | CONST_PERSISTENT);
-  REGISTER_LONG_CONSTANT("XZ_COMPRESS_LEVEL_MAX",
-                         XZ_maxCLevel(),
-                         CONST_CS | CONST_PERSISTENT);
-  REGISTER_LONG_CONSTANT("XZ_COMPRESS_LEVEL_DEFAULT",
-                         DEFAULT_COMPRESS_LEVEL,
-                         CONST_CS | CONST_PERSISTENT);
+  ZEND_INIT_MODULE_GLOBALS(xz, php_xz_init_globals, NULL);
+  REGISTER_INI_ENTRIES();
 
-  REGISTER_LONG_CONSTANT("LIBXZ_VERSION_NUMBER",
-                         XZ_VERSION_NUMBER,
+  REGISTER_LONG_CONSTANT("XZ_COMPRESS_LEVEL_MIN", 0,
                          CONST_CS | CONST_PERSISTENT);
-  REGISTER_STRING_CONSTANT("LIBXZ_VERSION_STRING",
-                         XZ_VERSION_STRING,
+  REGISTER_LONG_CONSTANT("XZ_COMPRESS_LEVEL_MAX", 9,
+                         CONST_CS | CONST_PERSISTENT);
+  REGISTER_LONG_CONSTANT("XZ_COMPRESS_LEVEL_DEFAULT", DEFAULT_COMPRESS_LEVEL,
                          CONST_CS | CONST_PERSISTENT);
 
   php_register_url_stream_wrapper(STREAM_NAME, &php_stream_xz_wrapper TSRMLS_CC);
-  */
+
+  return SUCCESS;
+}
+
+ZEND_MSHUTDOWN_FUNCTION(xz)
+{
+  UNREGISTER_INI_ENTRIES();
   return SUCCESS;
 }
 
@@ -674,7 +587,7 @@ zend_module_entry xz_module_entry = {
   "xz",
   xz_functions,
   ZEND_MINIT(xz),
-  NULL,
+  ZEND_MSHUTDOWN(xz),
   NULL,
   NULL,
   ZEND_MINFO(xz),

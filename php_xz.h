@@ -19,6 +19,10 @@ extern zend_module_entry xz_module_entry;
 #include "TSRM.h"
 #endif
 
+ZEND_BEGIN_MODULE_GLOBALS(xz)
+  zend_long buffer_size;
+ZEND_END_MODULE_GLOBALS(xz)
+
 #ifdef ZTS
 #define PHP_XZ_G(v) TSRMG(xz_globals_id, zend_xz_globals *, v)
 #else
