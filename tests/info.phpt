@@ -10,5 +10,5 @@ xz
 
 Xz support => enabled
 Extension Version => %d.%d.%d
-Interface Version => %d.%d.%d
+Interface Version => %d.%d.%s
 %a
