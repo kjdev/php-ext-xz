@@ -1,10 +1,5 @@
 --TEST--
 xz_compress(): compress level
---SKIPIF--
-<?php
-include(dirname(__FILE__) . '/version_number.inc');
-if ($xz_version_number >= 10304) die("Skipped: using Zstandard 1.3.4 or later.");
-?>
 --FILE--
 <?php
 include(dirname(__FILE__) . '/data.inc');

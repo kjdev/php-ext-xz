@@ -291,28 +291,37 @@ static ssize_t php_xz_decomp_read(php_stream *stream, char *buf, size_t count TS
   STREAM_DATA_FROM_STREAM();
 
   lzma_action action = LZMA_RUN;
-  if (self->strm.avail_in == 0 && !php_stream_eof(self->stream)) {
-    self->strm.avail_in = php_stream_read(self->stream,
-                                          self->buf + self->strm.avail_in,
-                                          self->bufsize - self->strm.avail_in);
-    self->strm.next_in = self->buf;
-  } else if (php_stream_eof(self->stream)) {
-    action = LZMA_FINISH;
-  }
-  self->strm.avail_out = count;
-  self->strm.next_out = (uint8_t *)buf;
 
-  lzma_ret result = lzma_code(&self->strm, action);
-  if (result == LZMA_OK || result == LZMA_STREAM_END) {
-    ret = (size_t)(self->strm.next_out - (uint8_t *)buf);
-  } else {
-    php_error_docref(NULL TSRMLS_CC, E_WARNING, "xz: uncompression error");
+  do {
+    if (self->strm.avail_in == 0) {
+      if (php_stream_eof(self->stream)) {
+        action = LZMA_FINISH;
+      } else {
+        self->strm.avail_in = php_stream_read(self->stream,
+                                              self->buf,
+                                              self->bufsize);
+        self->strm.next_in = self->buf;
+      }
+    }
+
+    self->strm.avail_out = count;
+    self->strm.next_out = (uint8_t *)buf;
+
+    lzma_ret result = lzma_code(&self->strm, action);
+    if (result == LZMA_OK || result == LZMA_STREAM_END) {
+      ret = (size_t)(self->strm.next_out - (uint8_t *)buf);
+      if (result == LZMA_STREAM_END) {
+        return ret;
+      }
+    } else {
+      php_error_docref(NULL TSRMLS_CC, E_WARNING, "xz: uncompression error");
 #if PHP_VERSION_ID >= 70400
-    return -1;
+      return -1;
 #else
-    return 0;
+      return 0;
 #endif
-  }
+    }
+  } while (ret == 0);
 
   return ret;
 }
