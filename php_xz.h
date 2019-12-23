@@ -1,7 +1,7 @@
 #ifndef PHP_XZ_H
 #define PHP_XZ_H
 
-#define PHP_XZ_EXT_VERSION "0.1.0"
+#define PHP_XZ_EXT_VERSION "0.2.0"
 #define PHP_XZ_NS "Xz"
 
 extern zend_module_entry xz_module_entry;
