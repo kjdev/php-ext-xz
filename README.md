@@ -22,7 +22,7 @@ Documentation for XZ can be found at [» https://tukaani.org/xz](https://tukaani
 
 ## Configration
 
-xz.ini:
+php.ini:
 
 ```
 extension=xz.so
