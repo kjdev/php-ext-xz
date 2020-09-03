@@ -45,7 +45,7 @@ XZ\_COMPRESS\_LEVEL\_DEFAULT | Default compress level value
 
 #### Description
 
-string **zstd\_compress** ( string _$data_ [, int _$level_ = 6 ] )
+string **xz\_compress** ( string _$data_ [, int _$level_ = 6 ] )
 
 XZ compression.
 
