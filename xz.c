@@ -6,7 +6,7 @@
 #include <php_ini.h>
 #include <ext/standard/info.h>
 #if ZEND_MODULE_API_NO >= 20141001
-#include <ext/standard/php_smart_string.h>
+#include <zend_smart_string.h>
 #else
 #include <ext/standard/php_smart_str.h>
 #endif
@@ -190,9 +190,13 @@ static int php_xz_decomp_close(php_stream *stream, int close_handle TSRMLS_DC)
     return EOF;
   }
 
+  int ret = 0;
+
   if (close_handle) {
     if (self->stream) {
-      php_stream_close(self->stream);
+      if (php_stream_close(self->stream)) {
+        ret = EOF;
+      }
       self->stream = NULL;
     }
   }
@@ -206,7 +210,7 @@ static int php_xz_decomp_close(php_stream *stream, int close_handle TSRMLS_DC)
 
   stream->abstract = NULL;
 
-  return EOF;
+  return ret;
 }
 
 static int php_xz_comp_flush(php_stream *stream TSRMLS_DC)
@@ -222,12 +226,16 @@ static int php_xz_comp_flush(php_stream *stream TSRMLS_DC)
     lzma_ret result = lzma_code(&self->strm, LZMA_RUN);
     if (result == LZMA_OK) {
       size_t write = (size_t)(self->strm.next_out - self->buf);
-      if (write) {
-        php_stream_write(self->stream, self->buf, write);
+      if (write
+          && (size_t) php_stream_write(self->stream, self->buf, write)
+             != write) {
+        ret = EOF;
+        break;
       }
     } else {
       php_error_docref(NULL TSRMLS_CC, E_WARNING, "xz compress error\n");
       ret = EOF;
+      break;
     }
   } while (self->strm.avail_in > 0);
 
@@ -242,6 +250,8 @@ static int php_xz_comp_close(php_stream *stream, int close_handle TSRMLS_DC)
     return EOF;
   }
 
+  int ret = 0;
+
   while (1) {
     self->strm.next_out = self->buf;
     self->strm.avail_out = self->bufsize;
@@ -249,20 +259,27 @@ static int php_xz_comp_close(php_stream *stream, int close_handle TSRMLS_DC)
     lzma_ret result = lzma_code(&self->strm, LZMA_FINISH);
     if (result == LZMA_OK || result == LZMA_STREAM_END) {
       size_t write = (size_t)(self->strm.next_out - self->buf);
-      if (write) {
-        php_stream_write(self->stream, self->buf, write);
+      if (write
+          && (size_t) php_stream_write(self->stream, self->buf, write)
+             != write) {
+        ret = EOF;
+        break;
       }
       if (result == LZMA_STREAM_END) {
         break;
       }
     } else {
       php_error_docref(NULL TSRMLS_CC, E_WARNING, "xz compress error\n");
+      ret = EOF;
+      break;
     }
   }
 
   if (close_handle) {
     if (self->stream) {
-      php_stream_close(self->stream);
+      if (php_stream_close(self->stream)) {
+        ret = EOF;
+      }
       self->stream = NULL;
     }
   }
@@ -276,7 +293,7 @@ static int php_xz_comp_close(php_stream *stream, int close_handle TSRMLS_DC)
 
   stream->abstract = NULL;
 
-  return EOF;
+  return ret;
 }
 
 #if PHP_VERSION_ID < 70400

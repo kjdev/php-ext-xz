@@ -33,7 +33,7 @@ try {
 ===DONE===
 --EXPECTF--
 *** Testing xz_uncompress() function with Zero arguments ***
-ArgumentCountError: xz_uncompress() expects exactly 1 parameter, 0 given in %s:%d
+ArgumentCountError: xz_uncompress() expects exactly 1 %s, 0 given in %s:%d
 Stack trace:
 #0 %s(%d): xz_uncompress()
 #1 {main}
