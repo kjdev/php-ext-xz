@@ -29,7 +29,7 @@ try {
 ===Done===
 --EXPECTF--
 *** Testing xz_compress() function with Zero arguments ***
-ArgumentCountError: xz_compress() expects at least 1 parameter, 0 given in %s:%d
+ArgumentCountError: xz_compress() expects at least 1 %s, 0 given in %s:%d
 Stack trace:
 #0 %s(%d): xz_compress()
 #1 {main}
